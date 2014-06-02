@@ -1,63 +1,57 @@
 cmake_minimum_required(VERSION 2.6)
 
-project(LIBTB)
+project(LIBTP)
 
-set(LIBTB_NAME "tb")
-set(LIBTB_VERSIONMAJOR "1")
-set(LIBTB_VERSIONMINOR "1")
-set(LIBTB_VERSION "${LIBTB_VERSIONMAJOR}.${LIBTB_VERSIONMINOR}")
-set(LIBTB_SOVERSION "${LIBTB_VERSIONMAJOR}")
-set(LIBTB_CFLAGS "-std=gnu99 -Wall -Wextra -g")
-set(LIBTB_ROOT "")
+set(LIBTP_NAME "tp")
+set(LIBTP_VERSIONMAJOR "1")
+set(LIBTP_VERSIONMINOR "1")
+set(LIBTP_VERSION "${LIBTP_VERSIONMAJOR}.${LIBTP_VERSIONMINOR}")
+set(LIBTP_SOVERSION "${LIBTP_VERSIONMAJOR}")
+set(LIBTP_CFLAGS "-std=gnu99 -Wall -Wextra -g")
+set(LIBTP_ROOT "")
 
 if (DEFINED ${TARANTOOL_PRODUCT})
-	set(LIBTB_ROOT "${PROJECT_SOURCE_DIR}/connector/c/tb")
+	set(LIBTP_ROOT "${PROJECT_SOURCE_DIR}/connector/c/tp")
 else()
-	set(LIBTB_ROOT "${PROJECT_SOURCE_DIR}")
+	set(LIBTP_ROOT "${PROJECT_SOURCE_DIR}")
 endif()
 
-add_definitions("-DTB_LOCAL=${LIBTB_ROOT}/lib")
+add_definitions("-DTP_LOCAL=${LIBTP_ROOT}/lib")
 
-include_directories("${LIBTB_ROOT}")
+include_directories("${LIBTP_ROOT}")
 
-set(LIBTB_SRC
-    ${LIBTB_ROOT}/lib/file.c
-    ${LIBTB_ROOT}/lib/cksum.c
-    ${LIBTB_ROOT}/lib/session.c
-    ${LIBTB_ROOT}/lib/console.c
-    ${LIBTB_ROOT}/lib/utf8.c
-    ${LIBTB_ROOT}/lib/lex.c)
+set(LIBTP_SRC ${LIBTP_ROOT}/lib/tp_io.c)
 
-add_library(tb STATIC ${LIBTB_SRC})
+add_library(tp STATIC ${LIBTP_SRC})
 
-set_target_properties(tb PROPERTIES COMPILE_FLAGS "${LIBTB_CFLAGS}")
-set_target_properties(tb PROPERTIES VERSION ${LIBTB_VERSION} SOVERSION ${LIBTB_SOVERSION})
-set_target_properties(tb PROPERTIES OUTPUT_NAME ${LIBTB_NAME})
+set_target_properties(tp PROPERTIES COMPILE_FLAGS "${LIBTP_CFLAGS}")
+set_target_properties(tp PROPERTIES VERSION ${LIBTP_VERSION} SOVERSION ${LIBTP_SOVERSION})
+set_target_properties(tp PROPERTIES OUTPUT_NAME ${LIBTP_NAME})
 
-project(LIBTB_SHARED)
+project(LIBTP_SHARED)
 
-add_library(tb_shared SHARED SHARED ${LIBTB_SRC})
+add_library(tp_shared SHARED SHARED ${LIBTP_SRC})
 
 string(REPLACE "-static-libgcc" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 string(REPLACE "-static" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 
-set_target_properties(tb_shared PROPERTIES COMPILE_FLAGS "${LIBTB_CFLAGS}")
-set_target_properties(tb_shared PROPERTIES VERSION ${LIBTB_VERSION} SOVERSION ${LIBTB_SOVERSION})
-set_target_properties(tb_shared PROPERTIES OUTPUT_NAME ${LIBTB_NAME})
+set_target_properties(tp_shared PROPERTIES COMPILE_FLAGS "${LIBTP_CFLAGS}")
+set_target_properties(tp_shared PROPERTIES VERSION ${LIBTP_VERSION} SOVERSION ${LIBTP_SOVERSION})
+set_target_properties(tp_shared PROPERTIES OUTPUT_NAME ${LIBTP_NAME})
 
-#install(TARGETS tb ARCHIVE DESTINATION lib)
-#install(TARGETS tb_shared LIBRARY DESTINATION lib)
+#install(TARGETS tp ARCHIVE DESTINATION lib)
+#install(TARGETS tp_shared LIBRARY DESTINATION lib)
 
 #install(FILES
-#        ${LIBTB_ROOT}/lib/file.h
-#        ${LIBTB_ROOT}/lib/request.h
-#        ${LIBTB_ROOT}/lib/session.h
-#        ${LIBTB_ROOT}/lib/console.h
-#        ${LIBTB_ROOT}/lib/utf8.h
-#        ${LIBTB_ROOT}/lib/lex.h
-#        ${LIBTB_ROOT}/lib/tp.h
+#        ${LIBTP_ROOT}/lib/file.h
+#        ${LIBTP_ROOT}/lib/request.h
+#        ${LIBTP_ROOT}/lib/session.h
+#        ${LIBTP_ROOT}/lib/console.h
+#        ${LIBTP_ROOT}/lib/utf8.h
+#        ${LIBTP_ROOT}/lib/lex.h
+#        ${LIBTP_ROOT}/lib/tp.h
 #        DESTINATION include/tarantool)
-#install(FILES ${LIBTB_ROOT}/lib/tarantool.h
+#install(FILES ${LIBTP_ROOT}/lib/tarantool.h
 #        DESTINATION include)
 
 add_subdirectory(test)
@@ -65,9 +59,9 @@ add_subdirectory(test)
 message(STATUS "")
 message(STATUS "Tarantool library configuration:")
 message(STATUS "")
-message(STATUS "VERSION: lib${LIBTB_NAME}.so.${LIBTB_VERSION}")
+message(STATUS "VERSION: lib${LIBTP_NAME}.so.${LIBTP_VERSION}")
 message(STATUS "C_COMPILER: ${CMAKE_C_COMPILER}")
-message(STATUS "C_FLAGS: ${LIBTB_CFLAGS}")
-message(STATUS "LOCATION: ${LIBTB_ROOT}")
+message(STATUS "C_FLAGS: ${LIBTP_CFLAGS}")
+message(STATUS "LOCATION: ${LIBTP_ROOT}")
 message(STATUS "PREFIX: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "")

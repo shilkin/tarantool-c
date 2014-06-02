@@ -1,5 +1,5 @@
-#ifndef TB_SESSION_H_
-#define TB_SESSION_H_
+#ifndef TP_IO_H_
+#define TP_IO_H_
 
 /*
  * Redistribution and use in source and binary forms, with or
@@ -30,20 +30,16 @@
  * SUCH DAMAGE.
 */
 
-/*
- * tarantool v1.6 network session
-*/
-
 #include <sys/time.h>
 
-struct tbbuf {
+struct tpbuf {
 	size_t off;
 	size_t top;
 	size_t size;
 	char *buf;
 };
 
-struct tbses {
+struct tpconnection {
 	char *host;
 	int port;
 	int connected;
@@ -52,24 +48,24 @@ struct tbses {
 	int rbuf;
 	int fd;
 	int errno_;
-	struct tbbuf s, r;
+	struct tpbuf s, r;
 };
 
-enum tbsesopt {
-	TB_HOST,
-	TB_PORT,
-	TB_CONNECTTM,
-	TB_SENDBUF,
-	TB_READBUF
+enum tpopt {
+	TP_HOST,
+	TP_PORT,
+	TP_CONNECTTM,
+	TP_SENDBUF,
+	TP_READBUF
 };
 
-int tb_sesinit(struct tbses*);
-int tb_sesfree(struct tbses*);
-int tb_sesset(struct tbses*, enum tbsesopt, ...);
-int tb_sesconnect(struct tbses*);
-int tb_sesclose(struct tbses*);
-int tb_sessync(struct tbses*);
-ssize_t tb_sessend(struct tbses*, char*, size_t);
-ssize_t tb_sesrecv(struct tbses*, char*, size_t, int strict);
+int tp_connection_init(struct tpconnection*);
+int tp_connection_free(struct tpconnection*);
+int tp_connection_set(struct tpconnection*, enum tpopt, ...);
+int tp_connect(struct tpconnection*);
+int tp_close(struct tpconnection*);
+int tp_sync(struct tpconnection*);
+ssize_t tp_send(struct tpconnection*, char*, size_t);
+ssize_t tp_recv(struct tpconnection*, char*, size_t, int strict);
 
 #endif

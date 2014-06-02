@@ -1,5 +1,3 @@
-#ifndef LIBTB_H_
-#define LIBTB_H_
 
 /*
  * Redistribution and use in source and binary forms, with or
@@ -30,10 +28,6 @@
  * SUCH DAMAGE.
 */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdarg.h>
@@ -44,27 +38,72 @@ extern "C" {
 #include <assert.h>
 #include <errno.h>
 
-#define TB_INCLUDE(NAME) <TB_PREFIX/NAME>
+#define MP_SOURCE 1
+#include <lib/msgpuck.h>
 
-#ifdef TB_LOCAL
-# define TB_PREFIX TB_LOCAL
-#else
-# define TB_PREFIX tarantool
+#include <lib/tp.h>
+#include <lib/tp_io.h>
+
+#include <stdio.h>
+#include <limits.h>
+
+int
+main(int argc, char * argv[])
+{
+	(void)argc;
+	(void)argv;
+
+	char buf[1024];
+	struct tp tp;
+	tp_init(&tp, buf, sizeof(buf), NULL, NULL);
+	tp_insert(&tp, 0);
+	tp_encode_array(&tp, 2);
+	tp_encode_uint(&tp, 10);
+	tp_encode_uint(&tp, 20);
+
+
+#if 0
+#define MP_SOURCE 1
+#include "msgpuck.h"
+
+#include <lib/iproto.h>
+
+char buf[1024];
+char *p = buf + 5;
+p = mp_encode_map(p, 2);
+p = mp_encode_uint(p, TB_CODE);
+p = mp_encode_uint(p, TB_INSERT);
+p = mp_encode_uint(p, TB_SYNC);
+p = mp_encode_uint(p, 0);
+p = mp_encode_map(p, 2);
+p = mp_encode_uint(p, TB_SPACE);
+p = mp_encode_uint(p, 0);
+p = mp_encode_uint(p, TB_TUPLE);
+p = mp_encode_array(p, 2);
+p = mp_encode_uint(p, 10);
+p = mp_encode_uint(p, 20);
+uint32_t size = p - buf;
+*buf = 0xce;
+*(uint32_t*)(buf+1) = mp_bswap_u32(size - 5);
+
+struct tbses s;
+tb_sesinit(&s);
+tb_sesset(&s, TB_HOST, "127.0.0.1");
+tb_sesset(&s, TB_PORT, 33013);
+tb_sesset(&s, TB_SENDBUF, 0);
+tb_sesset(&s, TB_READBUF, 0);
+int rc = tb_sesconnect(&s);
+if (rc == -1)
+	return 1;
+tb_sessend(&s, buf, size);
+
+ssize_t len = tb_sesrecv(&s, buf, sizeof(buf), 0);
+struct tbresponse rp;
+int64_t r = tb_response(&rp, buf, len);
+if (r == -1)
+	return 1;
 #endif
 
-#include TB_INCLUDE(tp.h)
-#include TB_INCLUDE(file.h)
-#include TB_INCLUDE(session.h)
-#include TB_INCLUDE(console.h)
-#include TB_INCLUDE(utf8.h)
-#include TB_INCLUDE(queue.h)
-#include TB_INCLUDE(lex.h)
-
-#undef TP_INCLUDE
-#undef TP_PREFIX
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
-
-#endif
+	printf("ok\n");
+	return 0;
+}

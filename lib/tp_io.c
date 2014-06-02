@@ -27,8 +27,17 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
 */
+#include <stdlib.h>
+#include <stddef.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <string.h>
+#include <assert.h>
+#include <errno.h>
 
-#include <lib/tarantool.h>
+#include <lib/tp_io.h>
 
 #include <sys/time.h>
 #include <sys/types.h>
@@ -42,7 +51,7 @@
 #include <limits.h>
 
 static int
-tb_bufinit(struct tbbuf *b, int size)
+tp_bufinit(struct tpbuf *b, int size)
 {
 	b->off = 0;
 	b->top = 0;
@@ -57,7 +66,7 @@ tb_bufinit(struct tbbuf *b, int size)
 }
 
 static void
-tb_buffree(struct tbbuf *b)
+tp_buffree(struct tpbuf *b)
 {
 	if (b->buf) {
 		free(b->buf);
@@ -65,7 +74,7 @@ tb_buffree(struct tbbuf *b)
 	}
 }
 
-int tb_sesinit(struct tbses *s)
+int tp_connect_init(struct tpconnection *s)
 {
 	s->host = strdup("127.0.0.1");
 	if (s->host == NULL) {
@@ -85,24 +94,24 @@ int tb_sesinit(struct tbses *s)
 	return 0;
 }
 
-int tb_sesfree(struct tbses *s)
+int tp_connect_free(struct tpconnection *s)
 {
-	tb_sesclose(s);
+	tp_close(s);
 	if (s->host) {
 		free(s->host);
 		s->host = NULL;
 	}
-	tb_buffree(&s->s);
-	tb_buffree(&s->r);
+	tp_buffree(&s->s);
+	tp_buffree(&s->r);
 	return 0;
 }
 
-int tb_sesset(struct tbses *s, enum tbsesopt o, ...)
+int tp_connection_set(struct tpconnection *s, enum tpopt o, ...)
 {
 	va_list args;
 	va_start(args, o);
 	switch (o) {
-	case TB_HOST: {
+	case TP_HOST: {
 		char *p = strdup(va_arg(args, char*));
 		if (p == NULL) {
 			va_end(args);
@@ -113,17 +122,17 @@ int tb_sesset(struct tbses *s, enum tbsesopt o, ...)
 		s->host = p;
 		break;
 	}
-	case TB_PORT:
+	case TP_PORT:
 		s->port = va_arg(args, int);
 		break;
-	case TB_CONNECTTM:
+	case TP_CONNECTTM:
 		s->tmc.tv_sec  = va_arg(args, int);
 		s->tmc.tv_usec = 0;
 		break;
-	case TB_SENDBUF:
+	case TP_SENDBUF:
 		s->sbuf = va_arg(args, int);
 		break;
-	case TB_READBUF:
+	case TP_READBUF:
 		s->rbuf = va_arg(args, int);
 		break;
 	default:
@@ -136,7 +145,7 @@ int tb_sesset(struct tbses *s, enum tbsesopt o, ...)
 }
 
 static int
-tb_sessetbufmax(struct tbses *s, int opt, int min)
+tp_setbufmax(struct tpconnection *s, int opt, int min)
 {
 	int max = 128 * 1024 * 1024;
 	if (min == 0)
@@ -153,20 +162,20 @@ tb_sessetbufmax(struct tbses *s, int opt, int min)
 }
 
 static int
-tb_sessetopts(struct tbses *s)
+tp_setopts(struct tpconnection *s)
 {
 	int opt = 1;
 	if (setsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1) {
 		s->errno_ = errno;
 		return -1;
 	}
-	tb_sessetbufmax(s, SO_SNDBUF, s->sbuf);
-	tb_sessetbufmax(s, SO_RCVBUF, s->rbuf);
+	tp_setbufmax(s, SO_SNDBUF, s->sbuf);
+	tp_setbufmax(s, SO_RCVBUF, s->rbuf);
 	return 0;
 }
 
 static int
-tb_sesresolve(struct tbses *s, struct sockaddr_in *addr)
+tp_resolve(struct tpconnection *s, struct sockaddr_in *addr)
 {
 	memset(addr, 0, sizeof(struct sockaddr_in));
 	addr->sin_family = AF_INET;
@@ -186,7 +195,7 @@ tb_sesresolve(struct tbses *s, struct sockaddr_in *addr)
 }
 
 static int
-tb_sesnonblock(struct tbses *s, int set)
+tp_connectnonblock(struct tpconnection *s, int set)
 {
 	int flags = fcntl(s->fd, F_GETFL);
 	if (flags == -1) {
@@ -204,15 +213,15 @@ tb_sesnonblock(struct tbses *s, int set)
 }
 
 static int
-tb_sesconnectdo(struct tbses *s)
+tp_connectdo(struct tpconnection *s)
 {
 	/* resolve address */
 	struct sockaddr_in addr;
-	int rc = tb_sesresolve(s, &addr);
+	int rc = tp_resolve(s, &addr);
 	if (rc == -1)
 		return -1;
 	/* set nonblock */
-	rc = tb_sesnonblock(s, 1);
+	rc = tp_connectnonblock(s, 1);
 	if (rc == -1)
 		return -1;
 
@@ -280,21 +289,21 @@ tb_sesconnectdo(struct tbses *s)
 	}
 
 	/* set block */
-	return tb_sesnonblock(s, 0);
+	return tp_connectnonblock(s, 0);
 }
 
-int tb_sesconnect(struct tbses *s)
+int tp_connect(struct tpconnection *s)
 {
 	int rc;
 	if (s->s.buf == NULL) {
-		rc = tb_bufinit(&s->s, s->sbuf);
+		rc = tp_bufinit(&s->s, s->sbuf);
 		if (rc == -1) {
 			s->errno_ = ENOMEM;
 			return -1;
 		}
-		rc = tb_bufinit(&s->r, s->rbuf);
+		rc = tp_bufinit(&s->r, s->rbuf);
 		if (rc == -1) {
-			tb_buffree(&s->s);
+			tp_buffree(&s->s);
 			s->errno_ = ENOMEM;
 			return -1;
 		}
@@ -304,17 +313,17 @@ int tb_sesconnect(struct tbses *s)
 		s->errno_ = errno;
 		return -1;
 	}
-	rc = tb_sessetopts(s);
+	rc = tp_setopts(s);
 	if (rc == -1)
 		return -1;
-	rc = tb_sesconnectdo(s);
+	rc = tp_connectdo(s);
 	if (rc == -1)
 		return -1;
 	s->connected = 1;
 	return 0;
 }
 
-int tb_sesclose(struct tbses *s)
+int tp_connectclose(struct tpconnection *s)
 {
 	int rc = 0;
 	if (s->fd != -1) {
@@ -328,7 +337,7 @@ int tb_sesclose(struct tbses *s)
 }
 
 static ssize_t
-tb_sessendraw(struct tbses *s, char *buf, size_t size)
+tp_sendraw(struct tpconnection *s, char *buf, size_t size)
 {
 	size_t off = 0;
 	do {
@@ -347,10 +356,10 @@ tb_sessendraw(struct tbses *s, char *buf, size_t size)
 }
 
 static ssize_t
-tb_sessenddo(struct tbses *s, char *buf, size_t size)
+tp_senddo(struct tpconnection *s, char *buf, size_t size)
 {
 	if (s->s.buf == NULL)
-		return tb_sessendraw(s, buf, size);
+		return tp_sendraw(s, buf, size);
 
 	if (size > s->s.size) {
 		s->errno_ = E2BIG;
@@ -361,7 +370,7 @@ tb_sessenddo(struct tbses *s, char *buf, size_t size)
 		s->s.off += size;
 		return size;
 	}
-	ssize_t r = tb_sessendraw(s, s->s.buf, s->s.off);
+	ssize_t r = tp_sendraw(s, s->s.buf, s->s.off);
 	if (r == -1)
 		return -1;
 
@@ -371,7 +380,7 @@ tb_sessenddo(struct tbses *s, char *buf, size_t size)
 }
 
 static ssize_t
-tb_sesrecvraw(struct tbses *s, char *buf, size_t size, int strict)
+tp_recvraw(struct tpconnection *s, char *buf, size_t size, int strict)
 {
 	size_t off = 0;
 	do {
@@ -390,10 +399,10 @@ tb_sesrecvraw(struct tbses *s, char *buf, size_t size, int strict)
 }
 
 static ssize_t
-tb_sesrecvdo(struct tbses *s, char *buf, size_t size)
+tp_recvdo(struct tpconnection *s, char *buf, size_t size)
 {
 	if (s->r.buf == NULL)
-		return tb_sesrecvraw(s, buf, size, 1);
+		return tp_recvraw(s, buf, size, 1);
 	
 	size_t lv, rv, off = 0, left = size;
 	while (1) {
@@ -411,7 +420,7 @@ tb_sesrecvdo(struct tbses *s, char *buf, size_t size)
 		}
 
 		s->r.off = 0;
-		ssize_t top = tb_sesrecvraw(s, s->r.buf, s->r.size, 0);
+		ssize_t top = tp_recvraw(s, s->r.buf, s->r.size, 0);
 		if (top <= 0) {
 			s->errno_ = errno;
 			return -1;
@@ -428,11 +437,11 @@ tb_sesrecvdo(struct tbses *s, char *buf, size_t size)
 	return -1;
 }
 
-int tb_sessync(struct tbses *s)
+int tp_sync(struct tpconnection *s)
 {
 	if (s->s.off == 0)
 		return 0;
-	ssize_t rc = tb_sessendraw(s, s->s.buf, s->s.off);
+	ssize_t rc = tp_sendraw(s, s->s.buf, s->s.off);
 	if (rc == -1)
 		return -1;
 	s->s.off = 0;
@@ -440,13 +449,12 @@ int tb_sessync(struct tbses *s)
 }
 
 ssize_t
-tb_sessend(struct tbses *s, char *buf, size_t size)
-{
-	return tb_sessenddo(s, buf, size);
+tp_connectsend(struct tpconnection *s, char *buf, size_t size) {
+	return tp_senddo(s, buf, size);
 }
 
 ssize_t
-tb_sesrecv(struct tbses *s, char *buf, size_t size, int strict)
+tp_recv(struct tpconnection *s, char *buf, size_t size, int strict)
 {
 	if (! strict) {
 		if (s->r.buf) {
@@ -461,7 +469,7 @@ tb_sesrecv(struct tbses *s, char *buf, size_t size, int strict)
 		}
 		/* todo: make unstricted read with readahead
 		 * buffer */
-		return tb_sesrecvraw(s, buf, size, 0);
+		return tp_recvraw(s, buf, size, 0);
 	}
-	return tb_sesrecvdo(s, buf, size);
+	return tp_recvdo(s, buf, size);
 }
