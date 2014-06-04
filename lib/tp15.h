@@ -343,11 +343,12 @@ tp_unused(struct tp *p) {
 */
 tpfunction_unused static char*
 tp_realloc(struct tp *p, size_t required, size_t *size) {
-	size_t toalloc = tp_size(p) * 2;
-	if (tpunlikely(toalloc < required))
-		toalloc = tp_size(p) + required;
-	*size = toalloc;
-	return realloc(p->s, toalloc);
+	size_t sz = tp_size(p) * 2;
+	size_t actual = tp_used(p) + required;
+	if (tpunlikely(actual > sz))
+		sz = actual;
+	*size = sz;
+	return realloc(p->s, sz);
 }
 
 

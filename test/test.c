@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdarg.h>
+#include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -41,11 +42,22 @@
 #define MP_SOURCE 1
 #include <lib/msgpuck.h>
 
-#include <lib/tp.h>
+#include <lib/tp15.h>
 #include <lib/tp_io.h>
 
 #include <stdio.h>
 #include <limits.h>
+
+static void
+test_gh331(void)
+{
+	struct tp request;
+	tp_init(&request, NULL, 0, tp_realloc, NULL);
+	tp_call(&request, 0, "test", 4);
+	tp_tuple(&request);
+	tp_field(&request, "", 2*tp_size(&request)-1);
+	assert(tp_used(&request) <= tp_size(&request));
+}
 
 int
 main(int argc, char * argv[])
@@ -53,6 +65,9 @@ main(int argc, char * argv[])
 	(void)argc;
 	(void)argv;
 
+	test_gh331();
+
+	/*
 	char buf[1024];
 	struct tp tp;
 	tp_init(&tp, buf, sizeof(buf), NULL, NULL);
@@ -60,49 +75,45 @@ main(int argc, char * argv[])
 	tp_encode_array(&tp, 2);
 	tp_encode_uint(&tp, 10);
 	tp_encode_uint(&tp, 20);
+	*/
 
 
-#if 0
-#define MP_SOURCE 1
-#include "msgpuck.h"
+	#if 0
+	char buf[1024];
+	char *p = buf + 5;
+	p = mp_encode_map(p, 2);
+	p = mp_encode_uint(p, TB_CODE);
+	p = mp_encode_uint(p, TB_INSERT);
+	p = mp_encode_uint(p, TB_SYNC);
+	p = mp_encode_uint(p, 0);
+	p = mp_encode_map(p, 2);
+	p = mp_encode_uint(p, TB_SPACE);
+	p = mp_encode_uint(p, 0);
+	p = mp_encode_uint(p, TB_TUPLE);
+	p = mp_encode_array(p, 2);
+	p = mp_encode_uint(p, 10);
+	p = mp_encode_uint(p, 20);
+	uint32_t size = p - buf;
+	*buf = 0xce;
+	*(uint32_t*)(buf+1) = mp_bswap_u32(size - 5);
 
-#include <lib/iproto.h>
+	struct tbses s;
+	tb_sesinit(&s);
+	tb_sesset(&s, TB_HOST, "127.0.0.1");
+	tb_sesset(&s, TB_PORT, 33013);
+	tb_sesset(&s, TB_SENDBUF, 0);
+	tb_sesset(&s, TB_READBUF, 0);
+	int rc = tb_sesconnect(&s);
+	if (rc == -1)
+		return 1;
+	tb_sessend(&s, buf, size);
 
-char buf[1024];
-char *p = buf + 5;
-p = mp_encode_map(p, 2);
-p = mp_encode_uint(p, TB_CODE);
-p = mp_encode_uint(p, TB_INSERT);
-p = mp_encode_uint(p, TB_SYNC);
-p = mp_encode_uint(p, 0);
-p = mp_encode_map(p, 2);
-p = mp_encode_uint(p, TB_SPACE);
-p = mp_encode_uint(p, 0);
-p = mp_encode_uint(p, TB_TUPLE);
-p = mp_encode_array(p, 2);
-p = mp_encode_uint(p, 10);
-p = mp_encode_uint(p, 20);
-uint32_t size = p - buf;
-*buf = 0xce;
-*(uint32_t*)(buf+1) = mp_bswap_u32(size - 5);
-
-struct tbses s;
-tb_sesinit(&s);
-tb_sesset(&s, TB_HOST, "127.0.0.1");
-tb_sesset(&s, TB_PORT, 33013);
-tb_sesset(&s, TB_SENDBUF, 0);
-tb_sesset(&s, TB_READBUF, 0);
-int rc = tb_sesconnect(&s);
-if (rc == -1)
-	return 1;
-tb_sessend(&s, buf, size);
-
-ssize_t len = tb_sesrecv(&s, buf, sizeof(buf), 0);
-struct tbresponse rp;
-int64_t r = tb_response(&rp, buf, len);
-if (r == -1)
-	return 1;
-#endif
+	ssize_t len = tb_sesrecv(&s, buf, sizeof(buf), 0);
+	struct tbresponse rp;
+	int64_t r = tb_response(&rp, buf, len);
+	if (r == -1)
+		return 1;
+	#endif
 
 	printf("ok\n");
 	return 0;
