@@ -477,14 +477,15 @@ tp_response(struct tpresponse *r, char *buf, size_t size)
 	while (n-- > 0) {
 		uint32_t key = mp_decode_uint(&p);
 		switch (key) {
-		case TP_ERROR:
+		case TP_ERROR: {
 			if (mp_typeof(*p) != MP_STR)
 				return -1;
 			uint32_t elen = 0;
 			r->error = mp_decode_str(&p, &elen);
 			r->error_end = r->error + elen;
 			break;
-		case TP_DATA:
+		}
+		case TP_DATA: {
 			if (mp_typeof(*p) != MP_ARRAY)
 				return -1;
 			r->data = p;
@@ -492,9 +493,14 @@ tp_response(struct tpresponse *r, char *buf, size_t size)
 			r->data_end = p;
 			break;
 		}
+		}
 		r->bitmap |= (1ULL << key);
 	}
 	return p - buf;
 }
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif
