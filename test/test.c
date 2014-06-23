@@ -39,15 +39,25 @@
 #include <assert.h>
 #include <errno.h>
 
-#define MP_SOURCE 1
-#include <lib/msgpuck.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+//#include <arpa/inet.h>
 
-#include <lib/tp15.h>
-#include <lib/tp_io.h>
+#include <tp.h>
+#include <tp_io.h>
 
 #include <stdio.h>
 #include <limits.h>
 
+
+#ifdef NDEBUG
+#define VERIFY(x) x
+#else
+#define VERIFY(x) assert(x)
+#endif
+
+#if 0
 static void
 test_gh331(void)
 {
@@ -58,6 +68,282 @@ test_gh331(void)
 	tp_field(&request, "", 2*tp_size(&request)-1);
 	assert(tp_used(&request) <= tp_size(&request));
 }
+#endif
+
+/**
+ * MP_EXT is printed as "EXT" only, all MP_EXT data is skipped
+ */
+static int
+mp_print_internal(const char **beg)
+{
+	switch (mp_typeof(**beg)) {
+	case MP_NIL:
+		mp_next(beg);
+		printf("NIL");
+		break;
+	case MP_UINT:
+		printf("%" PRIu64, mp_decode_uint(beg));
+		break;
+	case MP_INT:
+		printf("%" PRId64, mp_decode_int(beg));
+		break;
+	case MP_STR:
+	{
+		uint32_t strlen;
+		const char *str = mp_decode_str(beg, &strlen);
+		printf("\"%.*s\"", strlen, str);
+		break;
+	}
+	case MP_BIN:
+	{
+		uint32_t binlen;
+		const char *bin = mp_decode_bin(beg, &binlen);
+		printf("(");
+		const char *hex = "0123456789ABCDEF";
+		for (uint32_t i = 0; i < binlen; i++) {
+			unsigned char c = (unsigned char)bin[i];
+			printf("%c%c", hex[c >> 4], hex[c & 0xF]);
+		}
+		printf(")");
+		break;
+	}
+	case MP_ARRAY:
+	{
+		uint32_t size = mp_decode_array(beg);
+		printf("[");
+		for (uint32_t i = 0; i < size; i++) {
+			if (i)
+				printf(", ");
+			mp_print_internal(beg);
+		}
+		printf("]");
+		break;
+	}
+	case MP_MAP:
+	{
+		uint32_t size = mp_decode_map(beg);
+		printf("{");
+		for (uint32_t i = 0; i < size; i++) {
+			if (i)
+				printf(", ");
+			mp_print_internal(beg);
+			printf(":");
+			mp_print_internal(beg);
+		}
+		printf("}");
+		break;
+	}
+	case MP_BOOL:
+		printf("%s", mp_decode_bool(beg) ? "true" : "false");
+		break;
+	case MP_FLOAT:
+		printf("%g", mp_decode_float(beg));
+		break;
+	case MP_DOUBLE:
+		printf("%lg", mp_decode_double(beg));
+		break;
+	case MP_EXT:
+		mp_next(beg);
+		printf("EXT");
+		break;
+	default:
+		assert(false);
+		return -1;
+	}
+	return 0;
+}
+
+/**
+ * MP_EXT is printed as "EXT" only, all MP_EXT data is skipped
+ */
+int
+mp_print(const char **beg)
+{
+	int res = mp_print_internal(beg);
+	printf("\n");
+	return res;
+}
+
+/**
+ * %d, %i - int
+ * %u - unsigned int
+ * %ld, %li - long
+ * %lu - unsigned long
+ * %lld, %lli - long long
+ * %llu - unsigned long long
+ * %hd, %hi - short
+ * %hu - unsigned short
+ * %hhd, %hhi - char (as number)
+ * %hhu - unsigned char (as number)
+ * %f - float
+ * %lf - double
+ * %b - bool
+ * %s - zero-end string
+ * %.*s - string with specified length
+ * %<smth else> assert and undefined behaviour
+ * NIL - a nil value
+ * all other symbols are ignored
+ */
+#define MP_PROTO
+MP_PROTO size_t
+mp_encode_f(char *data, size_t data_size, const char *format, ...)
+{
+	size_t result = 0;
+	va_list vl;
+	va_start(vl, format);
+
+	for (const char *f = format; *f; f++) {
+		if (f[0] == '[') {
+			uint32_t size = 0;
+			int level = 1;
+			for (const char *e = f + 1; level && *e; e++) {
+				if (*e == '[' || *e == '{') {
+					if (level == 1)
+						size++;
+					level++;
+				} else if (*e == ']' || *e == '}') {
+					level--;
+					/* opened '[' must be closed by ']' */
+					assert(level || *e == ']');
+				} else if (*e == '%') {
+					if (e[1] == '%')
+						e++;
+					else if (level == 1)
+						size++;
+				} else if (*e == 'N' && e[1] == 'I' && e[2] == 'L' && level == 1) {
+					size++;
+				}
+			}
+			/* opened '[' must be closed */
+			assert(level == 0);
+			result += mp_sizeof_array(size);
+			if (result <= data_size)
+				data = mp_encode_array(data, size);
+		} else if (f[0] == '{') {
+			uint32_t count = 0;
+			int level = 1;
+			for (const char *e = f + 1; level && *e; e++) {
+				if (*e == '[' || *e == '{') {
+					if (level == 1)
+						count++;
+					level++;
+				} else if (*e == ']' || *e == '}') {
+					level--;
+					/* opened '{' must be closed by '}' */
+					assert(level || *e == '}');
+				} else if (*e == '%') {
+					if (e[1] == '%')
+						e++;
+					else if (level == 1)
+						count++;
+				} else if (*e == 'N' && e[1] == 'I' && e[2] == 'L' && level == 1) {
+					count++;
+				}
+			}
+			/* opened '{' must be closed */
+			assert(level == 0);
+			/* since map is a pair list, count must be even */
+			assert(count % 2 == 0);
+			uint32_t size = count / 2;
+			result += mp_sizeof_map(size);
+			if (result <= data_size)
+				data = mp_encode_map(data, size);
+		} else if (f[0] == '%') {
+			f++;
+			assert(f[0]);
+			int64_t int_value = 0;
+			int int_status = 0; /* 1 - signed, 2 - unsigned */
+
+			if (f[0] == 'd' || f[0] == 'i') {
+				int_value = va_arg(vl, int);
+				int_status = 1;
+			} else if (f[0] == 'u') {
+				int_value = va_arg(vl, unsigned int);
+				int_status = 2;
+			} else if (f[0] == 's') {
+				const char *str = va_arg(vl, const char *);
+				uint32_t len = (uint32_t)strlen(str);
+				result += mp_sizeof_str(len);
+				if (result <= data_size)
+					data = mp_encode_str(data, str, len);
+			} else if (f[0] == '.' && f[1] == '*' && f[2] == 's') {
+				uint32_t len = va_arg(vl, uint32_t);
+				const char *str = va_arg(vl, const char *);
+				result += mp_sizeof_str(len);
+				if (result <= data_size)
+					data = mp_encode_str(data, str, len);
+				f += 2;
+			} else if(f[0] == 'f') {
+				float v = (float)va_arg(vl, double);
+				result += mp_sizeof_float(v);
+				if (result <= data_size)
+					data = mp_encode_float(data, v);
+			} else if(f[0] == 'l' && f[1] == 'f') {
+				double v = va_arg(vl, double);
+				result += mp_sizeof_double(v);
+				if (result <= data_size)
+					data = mp_encode_double(data, v);
+				f++;
+			} else if(f[0] == 'b') {
+				bool v = (bool)va_arg(vl, int);
+				result += mp_sizeof_bool(v);
+				if (result <= data_size)
+					data = mp_encode_bool(data, v);
+			} else if (f[0] == 'l' && (f[1] == 'd' || f[1] == 'i')) {
+				int_value = va_arg(vl, long);
+				int_status = 1;
+				f++;
+			} else if (f[0] == 'l' && f[1] == 'u') {
+				int_value = va_arg(vl, unsigned long);
+				int_status = 2;
+				f++;
+			} else if (f[0] == 'l' && f[1] == 'l' && (f[2] == 'd' || f[2] == 'i')) {
+				int_value = va_arg(vl, long long);
+				int_status = 1;
+				f += 2;
+			} else if (f[0] == 'l' && f[1] == 'l' && f[2] == 'u') {
+				int_value = va_arg(vl, unsigned long long);
+				int_status = 2;
+				f += 2;
+			} else if (f[0] == 'h' && (f[1] == 'd' || f[1] == 'i')) {
+				int_value = va_arg(vl, int);
+				int_status = 1;
+				f++;
+			} else if (f[0] == 'h' && f[1] == 'u') {
+				int_value = va_arg(vl, unsigned int);
+				int_status = 2;
+				f++;
+			} else if (f[0] == 'h' && f[1] == 'h' && (f[2] == 'd' || f[2] == 'i')) {
+				int_value = va_arg(vl, int);
+				int_status = 1;
+				f += 2;
+			} else if (f[0] == 'h' && f[1] == 'h' && f[2] == 'u') {
+				int_value = va_arg(vl, unsigned int);
+				int_status = 2;
+				f += 2;
+			} else if (f[0] != '%') {
+				/* unexpected format specifier */
+				assert(false);
+			}
+
+			if (int_status == 1 && int_value < 0) {
+				result += mp_sizeof_int(int_value);
+				if (result <= data_size)
+					data = mp_encode_int(data, int_value);
+			} else if(int_status) {
+				result += mp_sizeof_uint(int_value);
+				if (result <= data_size)
+					data = mp_encode_uint(data, int_value);
+			}
+		} else if (f[0] == 'N' && f[1] == 'I' && f[2] == 'L') {
+			result += mp_sizeof_nil();
+			if (result <= data_size)
+				data = mp_encode_nil(data);
+			f += 2;
+		}
+	}
+	return result;
+}
 
 int
 main(int argc, char * argv[])
@@ -65,7 +351,9 @@ main(int argc, char * argv[])
 	(void)argc;
 	(void)argv;
 
+#if 0
 	test_gh331();
+#endif
 
 	/*
 	char buf[1024];
@@ -82,14 +370,14 @@ main(int argc, char * argv[])
 	char buf[1024];
 	char *p = buf + 5;
 	p = mp_encode_map(p, 2);
-	p = mp_encode_uint(p, TB_CODE);
-	p = mp_encode_uint(p, TB_INSERT);
-	p = mp_encode_uint(p, TB_SYNC);
+	p = mp_encode_uint(p, TP_CODE);
+	p = mp_encode_uint(p, TP_INSERT);
+	p = mp_encode_uint(p, TP_SYNC);
 	p = mp_encode_uint(p, 0);
 	p = mp_encode_map(p, 2);
-	p = mp_encode_uint(p, TB_SPACE);
+	p = mp_encode_uint(p, TP_SPACE);
 	p = mp_encode_uint(p, 0);
-	p = mp_encode_uint(p, TB_TUPLE);
+	p = mp_encode_uint(p, TP_TUPLE);
 	p = mp_encode_array(p, 2);
 	p = mp_encode_uint(p, 10);
 	p = mp_encode_uint(p, 20);
@@ -99,10 +387,10 @@ main(int argc, char * argv[])
 
 	struct tbses s;
 	tb_sesinit(&s);
-	tb_sesset(&s, TB_HOST, "127.0.0.1");
-	tb_sesset(&s, TB_PORT, 33013);
-	tb_sesset(&s, TB_SENDBUF, 0);
-	tb_sesset(&s, TB_READBUF, 0);
+	tb_sesset(&s, TP_HOST, "127.0.0.1");
+	tb_sesset(&s, TP_PORT, 33013);
+	tb_sesset(&s, TP_SENDBUF, 0);
+	tb_sesset(&s, TP_READBUF, 0);
 	int rc = tb_sesconnect(&s);
 	if (rc == -1)
 		return 1;
@@ -114,6 +402,120 @@ main(int argc, char * argv[])
 	if (r == -1)
 		return 1;
 	#endif
+
+
+
+	char ibuf[1024];
+	struct tp p;
+	tp_init(&p, ibuf, 1024, 0, 0);
+#if 0
+	tp_select(&p, 512, 0, 0, 2);
+	tp_encode_array(&p, 1);
+	tp_encode_uint(&p, 1);
+#endif
+#if 0
+	const char func[] = "box.space.test:select";
+	tp_call(&p, func, sizeof(func) - 1);
+	tp_encode_array(&p, 3);
+	tp_encode_uint(&p, 0);
+	tp_encode_array(&p, 1);
+	tp_encode_uint(&p, 1);
+	tp_encode_array(&p, 0);
+#endif
+#if 0
+	tp_insert(&p, 512);
+	tp_encode_array(&p, 3);
+	tp_encode_uint(&p, 5);
+	tp_encode_uint(&p, 5);
+	tp_encode_str(&p, "abc", 3);
+#endif
+#if 0
+	tp_replace(&p, 512);
+	tp_encode_array(&p, 3);
+	tp_encode_uint(&p, 5);
+	tp_encode_uint(&p, 5);
+	tp_encode_str(&p, "def", 3);
+#endif
+#if 0
+	tp_delete(&p, 512);
+	tp_encode_array(&p, 2);
+	tp_encode_uint(&p, 5);
+	tp_encode_uint(&p, 5);
+#endif
+
+#if 0
+	tp_update(&p, 512);
+	tp_encode_array(&p, 2);
+	tp_encode_uint(&p, 1);
+	tp_encode_uint(&p, 4);
+	tp_update_begin_ops(&p, 1);
+	tp_update_op(&p, '+', 1, 8);
+#endif
+
+	/*
+	tp_select(&p, 512, 0, 0, 88);
+	tp_encode_array(&p, 0);
+	*/
+
+
+	int s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	assert(s >= 0);
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = 0x100007F;
+	sa.sin_port = htons(33013);
+	VERIFY(connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+	printf("connected\n");
+	char obuf[1024];
+	int pos = 0;
+	const int greetings_size = 128;
+	do {
+		int rres = read(s, obuf + pos, greetings_size - pos);
+		assert(rres > 0);
+		if (rres <= 0)
+			exit(errno);
+		pos += rres;
+	} while (pos != greetings_size);
+
+	const char *base64salt = obuf + 64;
+	tp_auth(&p, base64salt, "test", 4, "***", 3);
+
+	pos = 0;
+	int send_size = (int)tp_used(&p);
+	do {
+		int wres = write(s, ibuf + pos, send_size - pos);
+		assert(wres > 0);
+		if (wres <= 0)
+			exit(errno);
+		pos += wres;
+	} while (pos < send_size);
+
+	struct tpresponse r;
+	pos = 0;
+		const int buf_size = 1024;
+	do {
+		int rres = read(s, obuf + pos, buf_size - pos);
+		assert(rres > 0);
+		if (rres <= 0)
+			exit(errno);
+		pos += rres;
+	} while (tp_response(&r, obuf, pos) < 0 || pos == buf_size);
+	if (r.error) {
+		char errmsg[1024];
+		memcpy(errmsg, r.error, r.error_end - r.error);
+		errmsg[r.error_end - r.error] = 0;
+		printf("Error: %s\n", errmsg);
+	} else {
+		assert(r.data);
+		printf("Size: %d\n", (int)(r.data_end - r.data));
+		const char *s = r.data;
+		int pr = mp_print(&s);
+		if (pr)
+			printf("print failed!");
+		if (s != r.data_end)
+			printf("Tail size %d detected!\n", (int)(r.data_end - s));
+	}
 
 	printf("ok\n");
 	return 0;

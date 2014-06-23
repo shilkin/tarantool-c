@@ -37,7 +37,7 @@
 #include <assert.h>
 #include <errno.h>
 
-#include <lib/tp_io.h>
+#include <tp_io.h>
 
 #include <sys/time.h>
 #include <sys/types.h>

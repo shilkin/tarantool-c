@@ -3,7 +3,7 @@ project(LIBTP_TEST)
 set(LIBTP_TESTNAME "test")
 set(LIBTP_TESTSRC test.c)
 
-set(LIBTP_TESTCFLAGS "-std=gnu99 -Wall -Wextra -g")
+set(LIBTP_TESTCFLAGS "-std=gnu99 -Wall -Wextra -Werror -g")
 
 add_executable(${LIBTP_TESTNAME} ${LIBTP_TESTSRC})
 target_link_libraries(${LIBTP_TESTNAME} tp)

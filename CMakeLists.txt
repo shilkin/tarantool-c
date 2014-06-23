@@ -16,11 +16,11 @@ else()
 	set(LIBTP_ROOT "${PROJECT_SOURCE_DIR}")
 endif()
 
-add_definitions("-DTP_LOCAL=${LIBTP_ROOT}/lib")
+add_definitions("-DTP_LOCAL=${LIBTP_ROOT}/src")
 
-include_directories("${LIBTP_ROOT}")
+include_directories("${LIBTP_ROOT}" "${LIBTP_ROOT}/src" "${LIBTP_ROOT}/src/msgpuck" "${LIBTP_ROOT}/src/third_party")
 
-set(LIBTP_SRC ${LIBTP_ROOT}/lib/tp_io.c)
+set(LIBTP_SRC ${LIBTP_ROOT}/src/tp_io.c ${LIBTP_ROOT}/src/msgpuck/msgpuck.c ${LIBTP_ROOT}/src/third_party/base64.c ${LIBTP_ROOT}/src/third_party/sha1.c)
 
 add_library(tp STATIC ${LIBTP_SRC})
 

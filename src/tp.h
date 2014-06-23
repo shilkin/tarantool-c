@@ -9,6 +9,9 @@ extern "C" {
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include "msgpuck.h"
+#include "sha1.h"
+#include "base64.h"
 
 #define tpfunction_unused __attribute__((unused))
 #define tppacked __attribute__((packed))
@@ -43,6 +46,7 @@ typedef char *(*tp_reserve)(struct tp *p, size_t req, size_t *size);
 #define TP_KEY      0x20
 #define TP_TUPLE    0x21
 #define TP_FUNCTION 0x22
+#define TP_USERNAME 0x23
 
 /* response body */
 #define TP_DATA     0x30
@@ -57,6 +61,8 @@ typedef char *(*tp_reserve)(struct tp *p, size_t req, size_t *size);
 #define TP_DELETE   5
 #define TP_CALL     6
 #define TP_AUTH     7
+
+#define SCRAMBLE_SIZE 20
 
 struct tp {
 	char *s, *p, *e;
@@ -268,6 +274,7 @@ static inline char*
 tp_insert(struct tp *p, uint32_t space)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_INSERT) +
 		mp_sizeof_map(2) +
@@ -276,7 +283,8 @@ tp_insert(struct tp *p, uint32_t space)
 		mp_sizeof_uint(TP_TUPLE);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_INSERT);
 	h = mp_encode_map(h, 2);
@@ -290,6 +298,7 @@ static inline char*
 tp_replace(struct tp *p, uint32_t space)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_REPLACE) +
 		mp_sizeof_map(2) +
@@ -298,7 +307,8 @@ tp_replace(struct tp *p, uint32_t space)
 		mp_sizeof_uint(TP_TUPLE);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_REPLACE);
 	h = mp_encode_map(h, 2);
@@ -312,6 +322,7 @@ static inline char*
 tp_delete(struct tp *p, uint32_t space)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_DELETE) +
 		mp_sizeof_map(2) +
@@ -320,7 +331,8 @@ tp_delete(struct tp *p, uint32_t space)
 		mp_sizeof_uint(TP_KEY);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_DELETE);
 	h = mp_encode_map(h, 2);
@@ -334,18 +346,20 @@ static inline char*
 tp_update(struct tp *p, uint32_t space)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_UPDATE) +
-		mp_sizeof_map(2) +
+		mp_sizeof_map(3) +
 		mp_sizeof_uint(TP_SPACE) +
 		mp_sizeof_uint(space) +
 		mp_sizeof_uint(TP_KEY);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_UPDATE);
-	h = mp_encode_map(h, 2);
+	h = mp_encode_map(h, 3);
 	h = mp_encode_uint(h, TP_SPACE);
 	h = mp_encode_uint(h, space);
 	h = mp_encode_uint(h, TP_KEY);
@@ -353,27 +367,63 @@ tp_update(struct tp *p, uint32_t space)
 }
 
 static inline char*
-tp_select(struct tp *p, uint32_t space, uint32_t index)
+tp_update_begin_ops(struct tp *p, uint32_t op_count)
+{
+	int sz = mp_sizeof_uint(TP_TUPLE) + mp_sizeof_array(op_count);
+	if (tpunlikely(tp_ensure(p, sz) == -1))
+		return NULL;
+	char *h = mp_encode_uint(p->p, TP_TUPLE);
+	mp_encode_array(h, op_count);
+	return tp_add(p, sz);
+}
+
+static inline char*
+tp_update_op(struct tp *p, char op, uint32_t field_no, uint32_t value)
+{
+
+	int sz = mp_sizeof_array(3) + mp_sizeof_str(1) +
+		mp_sizeof_uint(field_no) + mp_sizeof_uint(value);
+	if (tpunlikely(tp_ensure(p, sz) == -1))
+		return NULL;
+	char *h = mp_encode_array(p->p, 3);
+	h = mp_encode_str(h, &op, 1);
+	h = mp_encode_uint(h, field_no);
+	h = mp_encode_uint(h, value);
+	return tp_add(p, sz);
+}
+
+static inline char*
+tp_select(struct tp *p, uint32_t space, uint32_t index, uint32_t offset, uint32_t limit)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_SELECT) +
-		mp_sizeof_map(3) +
+		mp_sizeof_map(5) +
 		mp_sizeof_uint(TP_SPACE) +
 		mp_sizeof_uint(space) +
 		mp_sizeof_uint(TP_INDEX) +
 		mp_sizeof_uint(index) +
+		mp_sizeof_uint(TP_OFFSET) +
+		mp_sizeof_uint(offset) +
+		mp_sizeof_uint(TP_LIMIT) +
+		mp_sizeof_uint(limit) +
 		mp_sizeof_uint(TP_KEY);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_SELECT);
-	h = mp_encode_map(h, 3);
+	h = mp_encode_map(h, 5);
 	h = mp_encode_uint(h, TP_SPACE);
 	h = mp_encode_uint(h, space);
 	h = mp_encode_uint(h, TP_INDEX);
 	h = mp_encode_uint(h, index);
+	h = mp_encode_uint(h, TP_OFFSET);
+	h = mp_encode_uint(h, offset);
+	h = mp_encode_uint(h, TP_LIMIT);
+	h = mp_encode_uint(h, limit);
 	h = mp_encode_uint(h, TP_KEY);
 	return tp_add(p, sz);
 }
@@ -382,6 +432,7 @@ static inline char*
 tp_call(struct tp *p, const char *function, int len)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_CALL) +
 		mp_sizeof_map(2) +
@@ -390,7 +441,8 @@ tp_call(struct tp *p, const char *function, int len)
 		mp_sizeof_uint(TP_TUPLE);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_CALL);
 	h = mp_encode_map(h, 2);
@@ -400,27 +452,71 @@ tp_call(struct tp *p, const char *function, int len)
 	return tp_add(p, sz);
 }
 
+static void
+xor(unsigned char *to, unsigned const char *left,
+    unsigned const char *right, uint32_t len)
+{
+	const uint8_t *end = to + len;
+	while (to < end)
+		*to++= *left++ ^ *right++;
+}
+void
+scramble_prepare(void *out, const void *salt, const void *password,
+		 int password_len)
+{
+	unsigned char hash1[SCRAMBLE_SIZE];
+	unsigned char hash2[SCRAMBLE_SIZE];
+	SHA1_CTX ctx;
+
+	SHA1Init(&ctx);
+	SHA1Update(&ctx, password, password_len);
+	SHA1Final(hash1, &ctx);
+
+	SHA1Init(&ctx);
+	SHA1Update(&ctx, hash1, SCRAMBLE_SIZE);
+	SHA1Final(hash2, &ctx);
+
+	SHA1Init(&ctx);
+	SHA1Update(&ctx, salt, SCRAMBLE_SIZE);
+	SHA1Update(&ctx, hash2, SCRAMBLE_SIZE);
+	SHA1Final(out, &ctx);
+
+	xor(out, hash1, out, SCRAMBLE_SIZE);
+}
+
 static inline char*
-tp_auth(struct tp *p, const char *user, int len)
+tp_auth(struct tp *p, const char *salt_base64, const char *user, int ulen, const char *pass, int plen)
 {
 	int sz = 5 +
+		mp_sizeof_map(1) +
 		mp_sizeof_uint(TP_CODE) +
 		mp_sizeof_uint(TP_AUTH) +
 		mp_sizeof_map(2) +
-		mp_sizeof_uint(TP_KEY) +
-		mp_sizeof_array(1) +
-		mp_sizeof_str(len) +
-		mp_sizeof_uint(TP_TUPLE);
+		mp_sizeof_uint(TP_USERNAME) +
+		mp_sizeof_str(ulen) +
+		mp_sizeof_uint(TP_TUPLE) +
+		mp_sizeof_array(2) +
+		mp_sizeof_str(0) +
+		mp_sizeof_str(SCRAMBLE_SIZE);
 	if (tpunlikely(tp_ensure(p, sz) == -1))
 		return NULL;
-	char *h = mp_encode_map(p->p, 2);
+	p->h = p->p;
+	char *h = mp_encode_map(p->p + 5, 1);
 	h = mp_encode_uint(h, TP_CODE);
 	h = mp_encode_uint(h, TP_AUTH);
 	h = mp_encode_map(h, 2);
-	h = mp_encode_uint(h, TP_KEY);
-	h = mp_encode_array(h, 1);
-	h = mp_encode_str(h, user, len);
+	h = mp_encode_uint(h, TP_USERNAME);
+	h = mp_encode_str(h, user, ulen);
 	h = mp_encode_uint(h, TP_TUPLE);
+	h = mp_encode_array(h, 2);
+	h = mp_encode_str(h, 0, 0);
+
+	char salt[64];
+	base64_decode(salt_base64, 44, salt, 64);
+	char scramble[SCRAMBLE_SIZE];
+	scramble_prepare(scramble, salt, pass, plen);
+	h = mp_encode_str(h, scramble, SCRAMBLE_SIZE);
+
 	return tp_add(p, sz);
 }
 
