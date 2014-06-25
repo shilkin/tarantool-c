@@ -404,13 +404,36 @@ main(int argc, char * argv[])
 	#endif
 
 
+	int s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	assert(s >= 0);
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_addr.s_addr = 0x100007F;
+	sa.sin_port = htons(33013);
+	VERIFY(connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+	printf("connected\n");
+
+	const int gbufsize = 128;
+	char gbuf[gbufsize];
+	struct tpgreetings greet;
+
+	int pos = 0;
+	do {
+		int rres = read(s, gbuf + pos, gbufsize - pos);
+		assert(rres > 0);
+		if (rres <= 0)
+			exit(errno);
+		pos += rres;
+	} while (tp_greetings(&greet, gbuf, pos) < 0);
 
 	char ibuf[1024];
+	const uint32_t reqid = 555;
 	struct tp p;
 	tp_init(&p, ibuf, 1024, 0, 0);
 #if 0
 	tp_select(&p, 512, 0, 0, 2);
-	tp_encode_array(&p, 1);
+	tp_key(&p, 1);
 	tp_encode_uint(&p, 1);
 #endif
 #if 0
@@ -443,43 +466,30 @@ main(int argc, char * argv[])
 	tp_encode_uint(&p, 5);
 #endif
 
-#if 0
+#if 1
 	tp_update(&p, 512);
-	tp_encode_array(&p, 2);
+	tp_key(&p, 2);
 	tp_encode_uint(&p, 1);
-	tp_encode_uint(&p, 4);
-	tp_update_begin_ops(&p, 1);
-	tp_update_op(&p, '+', 1, 8);
+	tp_encode_uint(&p, 1);
+	tp_updatebegin(&p, 1);
+	tp_op(&p, '+', 1);
+	tp_encode_uint(&p, 1);
 #endif
 
-	/*
+#if 0
 	tp_select(&p, 512, 0, 0, 88);
-	tp_encode_array(&p, 0);
-	*/
+	tp_key(&p, 0);
+#endif
 
+#if 0
+	tp_auth(&p, greet.salt_base64, "test", 4, "***", 3);
+#endif
 
-	int s = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	assert(s >= 0);
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof(sa));
-	sa.sin_family = AF_INET;
-	sa.sin_addr.s_addr = 0x100007F;
-	sa.sin_port = htons(33013);
-	VERIFY(connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0);
-	printf("connected\n");
-	char obuf[1024];
-	int pos = 0;
-	const int greetings_size = 128;
-	do {
-		int rres = read(s, obuf + pos, greetings_size - pos);
-		assert(rres > 0);
-		if (rres <= 0)
-			exit(errno);
-		pos += rres;
-	} while (pos != greetings_size);
+#if 0
+	tp_ping(&p);
+#endif
 
-	const char *base64salt = obuf + 64;
-	tp_auth(&p, base64salt, "test", 4, "***", 3);
+	tp_reqid(&p, reqid);
 
 	pos = 0;
 	int send_size = (int)tp_used(&p);
@@ -493,20 +503,31 @@ main(int argc, char * argv[])
 
 	struct tpresponse r;
 	pos = 0;
-		const int buf_size = 1024;
+	const int buf_size = 1024;
+	char obuf[buf_size];
+	int reply_res = 0;
 	do {
 		int rres = read(s, obuf + pos, buf_size - pos);
 		assert(rres > 0);
 		if (rres <= 0)
 			exit(errno);
 		pos += rres;
-	} while (tp_response(&r, obuf, pos) < 0 || pos == buf_size);
+	} while ((reply_res = tp_reply(&r, obuf, pos)) == 0 && pos != buf_size);
+
+	if (reply_res < 0) {
+		printf("error parsing result\n");
+		return 0;
+	}
+
+	assert(tp_getreqid(&r) == reqid);
+
 	if (r.error) {
 		char errmsg[1024];
 		memcpy(errmsg, r.error, r.error_end - r.error);
 		errmsg[r.error_end - r.error] = 0;
 		printf("Error: %s\n", errmsg);
-	} else {
+		printf("errode: %d\n", r.code);
+	} else if (r.data) {
 		assert(r.data);
 		printf("Size: %d\n", (int)(r.data_end - r.data));
 		const char *s = r.data;
@@ -515,8 +536,32 @@ main(int argc, char * argv[])
 			printf("print failed!");
 		if (s != r.data_end)
 			printf("Tail size %d detected!\n", (int)(r.data_end - s));
+		while(tp_next(&r)) {
+			printf("tuple:");
+			while(tp_nextfield(&r)) {
+				enum tp_type t = tp_typeof(*tp_getfield(&r));
+				if (t == TP_NIL) {
+					printf("NIL ");
+				} else if (t == TP_INT) {
+					printf("%ld ", tp_get_int(tp_getfield(&r)));
+				} else if (t == TP_UINT) {
+					printf("%ld ", tp_get_uint(tp_getfield(&r)));
+				} else if (t == TP_STR) {
+					uint32_t len;
+					const char *s = tp_get_str(tp_getfield(&r), &len);
+					printf("%.*s ", len, s);
+				} else {
+					printf("f ");
+				}
+			}
+			printf("\n");
+		}
+
+	} else {
+		printf("no data\n");
 	}
 
 	printf("ok\n");
 	return 0;
 }
+
