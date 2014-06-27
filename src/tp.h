@@ -35,9 +35,623 @@ extern "C" {
 #define tpunlikely(x) (x)
 #endif
 
+/* {{{ API declaration */
 struct tp;
 
 typedef char *(*tp_reserve)(struct tp *p, size_t req, size_t *size);
+
+/**
+ * tp greetings object - points to parts of a greetings buffer.
+ */
+struct tpgreeting {
+	const char *description; /* Points to a text containg tarantool name and version */
+	const char *salt_base64; /* Points to connecion salt in base64 encodong */
+};
+
+/*
+ * Main tp request object - points to a request buffer.
+ *
+ * All fields except tp->p should not be accessed directly.
+ * Appropriate accessors should be used instead.
+*/
+struct tp {
+	char *s, *p, *e;       /* start, pos, end */
+	char *size;            /* pointer to lenght field of current request */
+	char *sync;            /* pointer to sync field of current request */
+	tp_reserve reserve;    /* realloc function pointer */
+	void *obj;             /* realloc function pointer */
+};
+
+/**
+ * Struct for iterating msgpack array
+ *
+ * struct tp_array_itr itr;
+ * if (tp_array_itr_init(&itr, buf, buf_size))
+ * 	panic("It's not a valid array!.");
+ * while (tp_array_itr_next(&itr)) {
+ * 	mp_print(itr.elem, itr.elem_end);
+ * 	// or do smth else with itr.elem
+ * }
+ */
+struct tp_array_itr {
+	const char *data; /* pointer to the beginning of array */
+	const char *first_elem; /* pointer to the first element of array */
+	const char *elem; /* pointer to current element of array */
+	const char *elem_end; /* pointer to current element end of array */
+	uint32_t elem_count; /* number of elements in array */
+	int cur_index; /* index of current element */
+};
+
+/**
+ * Struct for iterating msgpack map
+ *
+ * struct tp_map_itr itr;
+ * if (tp_map_itr_init(&itr, buf, buf_size))
+ * 	panic("It's not a valid map!.");
+ * while(tp_map_itr_next(&itr)) {
+ * 	mp_print(itr.key, itr.key_end);
+ * 	mp_print(itr.value, itr.value_end);
+ * 	// or do smth else with itr.key and itr.value
+ * }
+ */
+struct tp_map_itr {
+	const char *data; /* pointer to the beginning of map */
+	const char *first_key; /* pointer to the first key of map */
+	const char *key; /* pointer to current key of map */
+	const char *key_end; /* pointer to current key end */
+	const char *value; /* pointer to current value of map */
+	const char *value_end; /* pointer to current value end */
+	uint32_t pair_count; /* number of key-values pairs in array */
+	int cur_index; /* index of current pair */
+};
+
+/**
+ * tp response object - points to parts of a response buffer
+ */
+struct tpresponse {
+	uint64_t bitmap;               /* bitmap of field IDs that was read from response */
+	const char *buf;               /* points to begin of buffer */
+	uint32_t code;                 /* response code (0 is success, or errno if not) */
+	uint32_t sync;                 /* synchronization id */
+	const char *error;             /* eror message (NULL if not present) */
+	const char *error_end;         /* end of error message (NULL if not present) */
+	const char *data;              /* tuple data (NULL if not present) */
+	const char *data_end;          /* end if tuple data (NULL if not present) */
+	struct tp_array_itr tuple_itr; /* internal iterator over tuples */
+	struct tp_array_itr field_itr; /* internal iterator over tuple fields */
+};
+
+/**
+ * Receice greetings from the server.
+ * Note, the input buffer is not copied,
+ * so freeing or reusing the input buffer will invalidate tpgreeting struct
+ * For example salt is used for autorizaion (tp_auth).
+ * Returns 0 if buffer is too small or greetings size (128) on success
+ */
+static ssize_t
+tp_greeting(struct tpgreeting *g, char *buf, size_t size);
+
+/**
+ * Main request initialization function.
+ *
+ * buf     - current buffer, may be NULL
+ * size    - current buffer size
+ * reserve - reallocation function, may be NULL
+ * obj     - pointer to be passed to the reallocation function as
+ *           context
+ *
+ * Either a buffer pointer or a reserve function must be
+ * provided.
+ * If reserve function is provided, data must be manually freed
+ * when the buffer is no longer needed.
+ *  (eg. free(p->s) or tp_free(p) );
+ */
+static void
+tp_init(struct tp *p, char *buf, size_t size,
+        tp_reserve reserve, void *obj);
+
+/**
+ * A common reallocation function, can be used
+ * for 'reserve' param in tp_init().
+ * Resizes the buffer twice the previous size using realloc().
+ *
+ * struct tp req;
+ * tp_init(&req, NULL, tp_realloc, NULL);
+ * tp_ping(&req); // will call the reallocator
+ *
+ * data must be manually freed when the buffer is no longer
+ * needed.
+ * (eg. free(p->s) or tp_free(p) );
+ * if realloc will return NULL, then you must destroy previous memory.
+ * (eg.
+ * if (tp_realloc(p, ..) == NULL) {
+ * 	tp_free(p)
+ * 	return NULL;
+ * }
+*/
+tpfunction_unused static char*
+tp_realloc(struct tp *p, size_t required, size_t *size);
+
+/**
+ * Free function for use in a pair with tp_realloc.
+ * Don't use it when tp inited with static buffer!
+ */
+static void
+tp_free(struct tp *p);
+
+/**
+ * Get currently allocated buffer pointer
+ */
+static char*
+tp_buf(struct tp *p);
+
+/**
+ * Get currently allocated buffer size
+ */
+static size_t
+tp_size(struct tp *p);
+
+/**
+ * Get the size of data in the buffer
+ */
+static size_t
+tp_used(struct tp *p);
+
+/**
+ * Get the size available for write
+ */
+static size_t
+tp_unused(struct tp *p);
+
+/**
+ * Create a ping request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_ping(&req);
+ */
+static inline char*
+tp_ping(struct tp *p);
+
+/**
+ * Create an auth request.
+ *
+ * salt_base64 must be gathered from tpgreeings struct,
+ * that is initialized during tp_greeting call.
+ *
+ * tp_auth(p, greet.salt_base64, "admin", 5, "pass", 4);
+ */
+static char*
+tp_auth(struct tp *p, const char *salt_base64, const char *user, int ulen, const char *pass, int plen);
+
+/**
+ * Append a select request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_select(&req, 0, 0, 0, 100);
+ * tp_key(&req, 1);
+ * tp_sz(&req, "key");
+ */
+static char*
+tp_select(struct tp *p, uint32_t space, uint32_t index,
+	  uint32_t offset, uint32_t limit);
+
+/**
+ * Create an insert request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_insert(&req, 0);
+ * tp_tuple(&req, 2);
+ * tp_sz(&req, "key");
+ * tp_sz(&req, "value");
+ */
+static inline char*
+tp_insert(struct tp *p, uint32_t space);
+
+/**
+ * Create an replace request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_insert(&req, 0);
+ * tp_tuple(&req, 2);
+ * tp_sz(&req, "key");
+ * tp_sz(&req, "value");
+ */
+static char*
+tp_replace(struct tp *p, uint32_t space);
+
+/**
+ * Create a delete request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_delete(&req, 0);
+ * tp_key(&req, 1);
+ * tp_sz(&req, "key");
+ */
+static char*
+tp_delete(struct tp *p, uint32_t space);
+
+/**
+ * Create an update request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_update(&req, 0); // update of space 0
+ * tp_key(&req, 1); // key with one part
+ * tp_sz(&req, "key"); // one and only part of the key
+ * tp_updatebegin(&req, 2); // update with two operations
+ * tp_op(&req, "+", 2); // add to field 2 ..
+ * tp_encode_uint(&req, 1); // .. a value 1
+ * tp_op(&req, "=", 3); // set a field 3 ..
+ * tp_sz(&req, "value"); // .. a value "value"
+ */
+static char*
+tp_update(struct tp *p, uint32_t space);
+
+/**
+ * Begin update operations.
+ * See tp_update description for details.
+ */
+static char*
+tp_updatebegin(struct tp *p, uint32_t op_count);
+
+/**
+ * Add an update operation.
+ * See tp_update description.
+ * Operation op could be:
+ * "=" - assign operation argument to field <field_no>;
+ *  will extend the tuple if <field_no> == <max_field_no> + 1
+ * "#" - delete <argument> fields starting from <field_no>
+ * "!" - insert <argument> before <field_no>
+ * The following operation(s) are only defined for integer
+ * types:
+ * "+" - add argument to field <field_no>, argument
+ * are integer
+ * "-" - subtract argument from the field <field_no>
+ * "&" - bitwise AND of argument and field <field_no>
+ * "^" - bitwise XOR of argument and field <field_no>
+ * "|" - bitwise OR of argument and field <field_no>
+ */
+static inline char*
+tp_op(struct tp *p, char op, uint32_t field_no);
+
+/**
+ * Create a call request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ *
+ * char proc[] = "hello_proc";
+ * tp_call(&req, proc, sizeof(proc) - 1);
+ * tp_encode_array(&req, 2);
+ * tp_sz(&req, "arg1");
+ * tp_sz(&req, "arg2");
+ */
+static char*
+tp_call(struct tp *p, const char *function, int len);
+
+/**
+ * Write a tuple header
+ * Same as tp_encode_array, added for compatibility.
+ */
+static char*
+tp_tuple(struct tp *p, uint32_t field_count);
+
+/**
+ * Write a key header
+ * Same as tp_encode_array, added for compatibility.
+ */
+static char*
+tp_key(struct tp *p, uint32_t part_count);
+
+/**
+ * Add an uint value to the request
+ */
+static char*
+tp_encode_uint(struct tp *p, uint64_t num);
+
+/**
+ * Add an int value to the request
+ * the value must be less than zero
+ */
+static char*
+tp_encode_int(struct tp *p, int64_t num);
+
+/**
+ * Add n string value to the request, with lenght provided.
+ */
+static char*
+tp_encode_str(struct tp *p, const char *str, uint32_t len);
+
+/**
+ * Add n zero-end srting value to the request.
+ */
+static char*
+tp_encode_sz(struct tp *p, const char *str);
+
+/**
+ * Add n zero-end srting value to the request.
+ * (added for compatibility with tarantool 1.5 connector)
+ */
+static char*
+tp_sz(struct tp *p, const char *str);
+
+/**
+ * Add a nil value to the request
+ */
+static char*
+tp_encode_nil(struct tp *p);
+
+/**
+ * Add an binary data to the request.
+ */
+static char*
+tp_encode_bin(struct tp *p, const char *str, uint32_t len);
+
+/**
+ * Add n array to the request with a given size
+ *
+ * tp_encode_array(p, 3);
+ * tp_encode_uint(p, 1);
+ * tp_encode_uint(p, 2);
+ * tp_encode_uint(p, 3);
+ */
+static char*
+tp_encode_array(struct tp *p, uint32_t size);
+
+/**
+ * Add n map to the request with a given size
+ *
+ * tp_encode_array(p, 2);
+ * tp_encode_sz(p, "name");
+ * tp_encode_sz(p, "Alan");
+ * tp_encode_sz(p, "birth");
+ * tp_encode_uint(p, 1912);
+ */
+static char*
+tp_encode_map(struct tp *p, uint32_t size);
+
+/**
+ * Add a bool value to the request.
+ */
+static char*
+tp_encode_bool(struct tp *p, bool val);
+
+/**
+ * Add a float value to the request.
+ */
+static char*
+tp_encode_float(struct tp *p, float num);
+
+/**
+ * Add a double float value to the request.
+ */
+static char*
+tp_encode_double(struct tp *p, double num);
+
+/**
+ * Set the current request id.
+ */
+static inline void
+tp_reqid(struct tp *p, uint32_t reqid);
+
+/**
+ * Ensure that buffer has enough space to fill size bytes, resize
+ * buffer if needed. Returns -1 on error, and new allocated size
+ * of success.
+ */
+static inline ssize_t
+tp_ensure(struct tp *p, size_t size);
+
+/**
+ * Initialize struct tpresponse with a data buffer.
+ * Returns -1 if an error occured
+ * Returns 0 if buffer contains only part of the response
+ * Return size in bytes of the response in buffer on success
+ */
+static ssize_t
+tp_reply(struct tpresponse *r, const char * const buf, size_t size);
+
+/**
+ * Return the current request id
+ */
+static uint32_t
+tp_getreqid(struct tpresponse *r);
+
+/**
+ * Check if the response has a tuple.
+ * Automatically checked during tp_next() iteration.
+ */
+static int
+tp_hasdata(struct tpresponse *r);
+
+/**
+ * Get tuple count in response
+ */
+static uint32_t
+tp_tuplecount(const struct tpresponse *r);
+
+/**
+ * Skip to the next tuple or to the first tuple after rewind
+ */
+static int
+tp_next(struct tpresponse *r);
+
+/**
+ * Check if there is a one more tuple.
+ */
+static int
+tp_hasnext(struct tpresponse *r);
+
+/**
+ * Rewind iteration to the first tuple.
+ * Note that initialization of tpresponse via tp_reply
+ * rewinds tuple iteration automatically
+ */
+static void
+tp_rewind(struct tpresponse *r);
+
+/**
+ * Get the current tuple data, all fields.
+ */
+static const char *
+tp_gettuple(struct tpresponse *r);
+
+/**
+ * Get the current tuple size in bytes.
+ */
+static uint32_t
+tp_tuplesize(struct tpresponse *r);
+
+/**
+ *  Get a pointer to the end of the current tuple.
+ */
+static const char *
+tp_tupleend(struct tpresponse *r);
+
+/**
+ * Skip to the next field.
+ */
+static inline int
+tp_nextfield(struct tpresponse *r);
+
+/**
+ * Get the current field.
+ */
+static const char *
+tp_getfield(struct tpresponse *r);
+
+/*
+ * Rewind iteration to the first tuple field of the current tuple.
+ * Note that iterating tuples of the response
+ * rewinds field iteration automatically
+ */
+static void
+tp_rewindfield(struct tpresponse *r);
+
+/*
+ * Check if the current tuple has a one more field.
+ */
+static int
+tp_hasnextfield(struct tpresponse *r);
+
+
+/**
+ * Get the current field size in bytes.
+ */
+static uint32_t
+tp_getfieldsize(struct tpresponse *r);
+
+/*
+ * Determine MsgPack type by a first byte of encoded data.
+ */
+static enum tp_type
+tp_typeof(const char c);
+
+/**
+ * Read unsigned integer value
+ */
+static uint64_t
+tp_get_uint(const char *field);
+
+/**
+ * Read signed integer value
+ */
+static int64_t
+tp_get_int(const char *field);
+
+/**
+ * Read float value
+ */
+static float
+tp_get_float(const char *field);
+
+/**
+ * Read double value
+ */
+static double
+tp_get_double(const char *field);
+
+/**
+ * Read bool value
+ */
+static bool
+tp_get_bool(const char *field);
+
+/**
+ * Read string value
+ */
+static const char *
+tp_get_str(const char *field, uint32_t *size);
+
+/**
+ * Read binary data value
+ */
+static const char *
+tp_get_bin(const char *field, uint32_t *size);
+
+
+/**
+ * Init msgpack iterator by a pointer to msgpack array begin.
+ * First elemet will be accessible after tp_array_itr_next call.
+ * Returns -1 on error
+ */
+static int
+tp_array_itr_init(struct tp_array_itr *itr, const char *data, size_t size);
+
+/**
+ * Iterate to next position.
+ * return true if success, or false if there are no elemens left
+ */
+static bool
+tp_array_itr_next(struct tp_array_itr *itr);
+
+/**
+ * Reset iterator to the begining. First elemet will be
+ * accessible after tp_array_itr_next call.
+ * return true if success, or false if there are no elemens left
+ */
+static void
+tp_array_itr_reset(struct tp_array_itr *itr);
+
+/**
+ * Init msgpack map iterator by a pointer to msgpack map begin.
+ * First elemet will be accessible after tp_map_itr_next call.
+ * Returns -1 on error
+ */
+static int
+tp_map_itr_init(struct tp_map_itr *itr, const char *data, size_t size);
+
+/**
+ * Iterate to next position.
+ * return true if success, or false if there are no pairs left
+ */
+static bool
+tp_map_itr_next(struct tp_map_itr *itr);
+
+/**
+ * Reset iterator to the begining. First pair will be
+ * accessible after tp_map_itr_next call.
+ * return true if success, or false if there are no pairs left
+ */
+static void
+tp_map_itr_reset(struct tp_map_itr *itr);
+
+/* }}} */
+
+
+/* {{{ Implementation */
 
 /* available types */
 enum tp_type {
@@ -93,19 +707,23 @@ enum tp_request_type {
 
 static const uint32_t SCRAMBLE_SIZE = 20;
 
-/*
- * Main tp request object - points either to a request buffer.
- *
- * All fields except tp->p should not be accessed directly.
- * Appropriate accessors should be used instead.
-*/
-struct tp {
-	char *s, *p, *e;       /* start, pos, end */
-	char *size;            /* pointer to lenght field of current request */
-	char *sync;            /* pointer to sync field of current request */
-	tp_reserve reserve;    /* realloc function pointer */
-	void *obj;             /* realloc function pointer */
-};
+/**
+ * Receice greetings from the server.
+ * Note, the input buffer is not copied,
+ * so freeing or reusing the input buffer will invalidate tpgreeting struct
+ * For example salt is used for autorizaion (tp_auth).
+ * Returns 0 if buffer is too small or greetings size (128) on success
+ */
+static inline ssize_t
+tp_greeting(struct tpgreeting *g, char *buf, size_t size)
+{
+	if (size < 128)
+		return 0;
+	g->description = buf;
+	g->salt_base64 = buf + 64;
+	return 128;
+}
+
 
 /**
  * Get currently allocated buffer pointer
@@ -249,6 +867,37 @@ tp_add(struct tp *p, size_t size)
 	*p->size = 0xce;
 	*(uint32_t*)(p->size + 1) = mp_bswap_u32(p->p - p->size - 5);
 	return ptr;
+}
+
+/**
+ * Create a ping request.
+ *
+ * char buf[64];
+ * struct tp req;
+ * tp_init(&req, buf, sizeof(buf), NULL, NULL);
+ * tp_ping(&req);
+ */
+static inline char*
+tp_ping(struct tp *p)
+{
+	int sz = 5 +
+		mp_sizeof_map(2) +
+		mp_sizeof_uint(TP_CODE) +
+		mp_sizeof_uint(TP_PING) +
+		mp_sizeof_uint(TP_SYNC) +
+		5;
+	if (tpunlikely(tp_ensure(p, sz) == -1))
+		return NULL;
+	p->size = p->p;
+	char *h = mp_encode_map(p->p + 5, 2);
+	h = mp_encode_uint(h, TP_CODE);
+	h = mp_encode_uint(h, TP_PING);
+	h = mp_encode_uint(h, TP_SYNC);
+	p->sync = h;
+	*h = 0xce;
+	*(uint32_t*)(h + 1) = 0;
+	h += 5;
+	return tp_add(p, sz);
 }
 
 /**
@@ -476,37 +1125,6 @@ tp_call(struct tp *p, const char *function, int len)
 }
 
 /**
- * Create a ping request.
- *
- * char buf[64];
- * struct tp req;
- * tp_init(&req, buf, sizeof(buf), NULL, NULL);
- * tp_ping(&req);
- */
-static inline char*
-tp_ping(struct tp *p)
-{
-	int sz = 5 +
-		mp_sizeof_map(2) +
-		mp_sizeof_uint(TP_CODE) +
-		mp_sizeof_uint(TP_PING) +
-		mp_sizeof_uint(TP_SYNC) +
-		5;
-	if (tpunlikely(tp_ensure(p, sz) == -1))
-		return NULL;
-	p->size = p->p;
-	char *h = mp_encode_map(p->p + 5, 2);
-	h = mp_encode_uint(h, TP_CODE);
-	h = mp_encode_uint(h, TP_PING);
-	h = mp_encode_uint(h, TP_SYNC);
-	p->sync = h;
-	*h = 0xce;
-	*(uint32_t*)(h + 1) = 0;
-	h += 5;
-	return tp_add(p, sz);
-}
-
-/**
  * Create an update request.
  *
  * char buf[64];
@@ -638,6 +1256,14 @@ scramble_prepare(void *out, const void *salt, const void *password,
 	xor(out, hash1, out, SCRAMBLE_SIZE);
 }
 
+/**
+ * Create an auth request.
+ *
+ * salt_base64 must be gathered from tpgreeings struct,
+ * that is initialized during tp_greeting call.
+ *
+ * tp_auth(p, greet.salt_base64, "admin", 5, "pass", 4);
+ */
 static inline char*
 tp_auth(struct tp *p, const char *salt_base64, const char *user, int ulen, const char *pass, int plen)
 {
@@ -693,6 +1319,9 @@ tp_reqid(struct tp *p, uint32_t reqid)
 	*(uint32_t*)(h + 1) = mp_bswap_u32(reqid);
 }
 
+/**
+ * Add a nil value to the request
+ */
 static inline char*
 tp_encode_nil(struct tp *p)
 {
@@ -703,6 +1332,9 @@ tp_encode_nil(struct tp *p)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add an uint value to the request
+ */
 static inline char*
 tp_encode_uint(struct tp *p, uint64_t num)
 {
@@ -713,6 +1345,10 @@ tp_encode_uint(struct tp *p, uint64_t num)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add an int value to the request
+ * the value must be less than zero
+ */
 static inline char*
 tp_encode_int(struct tp *p, int64_t num)
 {
@@ -723,6 +1359,9 @@ tp_encode_int(struct tp *p, int64_t num)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add n string value to the request, with lenght provided.
+ */
 static inline char*
 tp_encode_str(struct tp *p, const char *str, uint32_t len)
 {
@@ -733,6 +1372,9 @@ tp_encode_str(struct tp *p, const char *str, uint32_t len)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add n zero-end srting value to the request.
+ */
 static inline char*
 tp_encode_sz(struct tp *p, const char *str)
 {
@@ -744,12 +1386,19 @@ tp_encode_sz(struct tp *p, const char *str)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add n zero-end srting value to the request.
+ * (added for compatibility with tarantool 1.5 connector)
+ */
 static inline char*
 tp_sz(struct tp *p, const char *str)
 {
 	return tp_encode_sz(p, str);
 }
 
+/**
+ * Add an binary data to the request.
+ */
 static inline char*
 tp_encode_bin(struct tp *p, const char *str, uint32_t len)
 {
@@ -760,6 +1409,14 @@ tp_encode_bin(struct tp *p, const char *str, uint32_t len)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add n array to the request with a given size
+ *
+ * tp_encode_array(p, 3);
+ * tp_encode_uint(p, 1);
+ * tp_encode_uint(p, 2);
+ * tp_encode_uint(p, 3);
+ */
 static inline char*
 tp_encode_array(struct tp *p, uint32_t size)
 {
@@ -770,6 +1427,15 @@ tp_encode_array(struct tp *p, uint32_t size)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add n map to the request with a given size
+ *
+ * tp_encode_array(p, 2);
+ * tp_encode_sz(p, "name");
+ * tp_encode_sz(p, "Alan");
+ * tp_encode_sz(p, "birth");
+ * tp_encode_uint(p, 1912);
+ */
 static inline char*
 tp_encode_map(struct tp *p, uint32_t size)
 {
@@ -780,6 +1446,9 @@ tp_encode_map(struct tp *p, uint32_t size)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add a bool value to the request.
+ */
 static inline char*
 tp_encode_bool(struct tp *p, bool val)
 {
@@ -790,6 +1459,9 @@ tp_encode_bool(struct tp *p, bool val)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add a float value to the request.
+ */
 static inline char*
 tp_encode_float(struct tp *p, float num)
 {
@@ -800,6 +1472,9 @@ tp_encode_float(struct tp *p, float num)
 	return tp_add(p, sz);
 }
 
+/**
+ * Add a double float value to the request.
+ */
 static inline char*
 tp_encode_double(struct tp *p, double num)
 {
@@ -810,45 +1485,31 @@ tp_encode_double(struct tp *p, double num)
 	return tp_add(p, sz);
 }
 
-/* Write a tuple header */
+/**
+ * Write a tuple header
+ * Same as tp_encode_array, added for compatibility.
+ */
 static inline char*
 tp_tuple(struct tp *p, uint32_t field_count)
 {
 	return tp_encode_array(p, field_count);
 }
 
-/* Write a key header */
+/**
+ * Write a key header
+ * Same as tp_encode_array, added for compatibility.
+ */
 static inline char*
 tp_key(struct tp *p, uint32_t part_count)
 {
 	return tp_encode_array(p, part_count);
 }
 
-
-struct tpgreetings {
-	const char *description;
-	const char *salt_base64;
-};
-
-static inline int64_t
-tp_greetings(struct tpgreetings *g, char *buf, size_t size)
-{
-	if (size < 128)
-		return -1;
-	g->description = buf;
-	g->salt_base64 = buf + 64;
-	return size - 128;
-}
-
-struct tp_array_itr {
-	const char *data;
-	const char *first_elem;
-	const char *elem;
-	const char *elem_end;
-	uint32_t elem_count;
-	int cur_index;
-};
-
+/**
+ * Init msgpack iterator by a pointer to msgpack array begin.
+ * First elemet will be accessible after tp_array_itr_next call.
+ * Returns -1 on error
+ */
 static inline int
 tp_array_itr_init(struct tp_array_itr *itr, const char *data, size_t size)
 {
@@ -865,6 +1526,10 @@ tp_array_itr_init(struct tp_array_itr *itr, const char *data, size_t size)
 	return 0;
 }
 
+/**
+ * Iterate to next position.
+ * return true if success, or false if there are no elemens left
+ */
 static inline bool
 tp_array_itr_next(struct tp_array_itr *itr)
 {
@@ -880,6 +1545,11 @@ tp_array_itr_next(struct tp_array_itr *itr)
 	return true;
 }
 
+/**
+ * Reset iterator to the begining. First elemet will be
+ * accessible after tp_array_itr_next call.
+ * return true if success, or false if there are no elemens left
+ */
 static inline void
 tp_array_itr_reset(struct tp_array_itr *itr)
 {
@@ -888,17 +1558,11 @@ tp_array_itr_reset(struct tp_array_itr *itr)
 	itr->elem_end = 0;
 }
 
-struct tp_map_itr {
-	const char *data;
-	const char *first_key;
-	const char *key;
-	const char *key_end;
-	const char *value;
-	const char *value_end;
-	uint32_t pair_count;
-	int cur_index;
-};
-
+/**
+ * Init msgpack map iterator by a pointer to msgpack map begin.
+ * First elemet will be accessible after tp_map_itr_next call.
+ * Returns -1 on error
+ */
 static inline int
 tp_map_itr_init(struct tp_map_itr *itr, const char *data, size_t size)
 {
@@ -915,6 +1579,10 @@ tp_map_itr_init(struct tp_map_itr *itr, const char *data, size_t size)
 	return 0;
 }
 
+/**
+ * Iterate to next position.
+ * return true if success, or false if there are no pairs left
+ */
 static inline bool
 tp_map_itr_next(struct tp_map_itr *itr)
 {
@@ -933,6 +1601,11 @@ tp_map_itr_next(struct tp_map_itr *itr)
 	return true;
 }
 
+/**
+ * Reset iterator to the begining. First pair will be
+ * accessible after tp_map_itr_next call.
+ * return true if success, or false if there are no pairs left
+ */
 static inline void
 tp_map_itr_reset(struct tp_map_itr *itr)
 {
@@ -943,20 +1616,13 @@ tp_map_itr_reset(struct tp_map_itr *itr)
 	itr->value_end = 0;
 }
 
-struct tpresponse {
-	uint64_t bitmap;
-	const char *buf;
-	uint32_t code;
-	uint32_t sync;
-	const char *error;
-	const char *error_end;
-	const char *data;
-	const char *data_end;
-	struct tp_array_itr tuple_itr;
-	struct tp_array_itr field_itr;
-};
-
-static inline int64_t
+/**
+ * Initialize struct tpresponse with a data buffer.
+ * Returns -1 if an error occured
+ * Returns 0 if buffer contains only part of the response
+ * Return size in bytes of the response in buffer on success
+ */
+static inline ssize_t
 tp_reply(struct tpresponse *r, const char * const buf, size_t size)
 {
 	memset(r, 0, sizeof(*r));
@@ -1060,7 +1726,7 @@ tp_hasdata(struct tpresponse *r)
 }
 
 /**
- * Get tuple count in responce
+ * Get tuple count in response
  */
 static inline uint32_t
 tp_tuplecount(const struct tpresponse *r)
@@ -1146,7 +1812,8 @@ tp_rewindfield(struct tpresponse *r)
  * Skip to the next field.
  */
 static inline int
-tp_nextfield(struct tpresponse *r) {
+tp_nextfield(struct tpresponse *r)
+{
 	return tp_array_itr_next(&r->field_itr);
 }
 
@@ -1154,7 +1821,8 @@ tp_nextfield(struct tpresponse *r) {
  * Check if the current tuple has a one more field.
  */
 static inline int
-tp_hasnextfield(struct tpresponse *r) {
+tp_hasnextfield(struct tpresponse *r)
+{
 	return (uint32_t)(r->field_itr.cur_index + 1) < r->field_itr.elem_count;
 }
 
@@ -1178,7 +1846,7 @@ tp_getfieldsize(struct tpresponse *r)
 }
 
 /*
- * Determine MsgPack type by a first byte \a c of encoded data.
+ * Determine MsgPack type by a first byte of encoded data.
  */
 static inline enum tp_type
 tp_typeof(const char c)
@@ -1186,47 +1854,70 @@ tp_typeof(const char c)
 	return mp_typeof(c);
 }
 
+/**
+ * Read unsigned integer value
+ */
 static inline uint64_t
 tp_get_uint(const char *field)
 {
 	return mp_decode_uint(&field);
 }
 
+/**
+ * Read signed integer value
+ */
 static inline int64_t
 tp_get_int(const char *field)
 {
 	return mp_decode_int(&field);
 }
 
+/**
+ * Read float value
+ */
 static inline float
 tp_get_float(const char *field)
 {
 	return mp_decode_float(&field);
 }
 
+/**
+ * Read double value
+ */
 static inline double
 tp_get_double(const char *field)
 {
 	return mp_decode_double(&field);
 }
 
+/**
+ * Read bool value
+ */
 static inline bool
 tp_get_bool(const char *field)
 {
 	return mp_decode_bool(&field);
 }
 
+/**
+ * Read string value
+ */
 static inline const char *
 tp_get_str(const char *field, uint32_t *size)
 {
 	return mp_decode_str(&field, size);
 }
 
+/**
+ * Read binary data value
+ */
 static inline const char *
 tp_get_bin(const char *field, uint32_t *size)
 {
 	return mp_decode_bin(&field, size);
 }
+
+/* }}} */
 
 #ifdef __cplusplus
 } /* extern "C" */
