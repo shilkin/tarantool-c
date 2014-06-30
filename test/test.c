@@ -252,50 +252,34 @@ main(int argc, char * argv[])
 	tp_init(&p, ibuf, 1024, 0, 0);
 #if 0
 	tp_select(&p, 512, 0, 0, 2);
-	tp_key(&p, 1);
-	tp_encode_uint(&p, 1);
+	tp_format(&p, "[%d]", 1);
 #endif
 #if 0
 	const char func[] = "box.space.test:select";
 	tp_call(&p, func, sizeof(func) - 1);
-	tp_encode_array(&p, 3);
-	tp_encode_uint(&p, 0);
-	tp_encode_array(&p, 1);
-	tp_encode_uint(&p, 1);
-	tp_encode_array(&p, 0);
+	tp_format(&p, "[ %d, [%d] [ ] ]", 0, 1);
 #endif
 #if 0
 	tp_insert(&p, 512);
-	tp_encode_array(&p, 3);
-	tp_encode_uint(&p, 5);
-	tp_encode_uint(&p, 5);
-	tp_encode_str(&p, "abc", 3);
+	tp_format(&p, "[%d %d %s]", 6, 6, "abc");
 #endif
 #if 0
 	tp_replace(&p, 512);
-	tp_encode_array(&p, 3);
-	tp_encode_uint(&p, 5);
-	tp_encode_uint(&p, 5);
-	tp_encode_str(&p, "def", 3);
+	tp_format(&p, "[%d %d %s]", 5, 5, "def");
 #endif
 #if 0
 	tp_delete(&p, 512);
-	tp_encode_array(&p, 2);
-	tp_encode_uint(&p, 5);
-	tp_encode_uint(&p, 5);
+	tp_format(&p, "[%d %d]", 5, 5);
 #endif
-
-#if 1
+#if 0
 	tp_update(&p, 512);
-	tp_key(&p, 2);
-	tp_encode_uint(&p, 1);
-	tp_encode_uint(&p, 1);
+	tp_format(&p, "[%d %d]", 1, 1);
 	tp_updatebegin(&p, 1);
 	tp_op(&p, '+', 1);
 	tp_encode_uint(&p, 1);
 #endif
 
-#if 0
+#if 1
 	tp_select(&p, 512, 0, 0, 88);
 	tp_key(&p, 0);
 #endif

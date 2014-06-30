@@ -342,6 +342,12 @@ static char*
 tp_call(struct tp *p, const char *function, int len);
 
 /**
+ *
+ */
+static char*
+tp_format(struct tp *p, const char *format, ...);
+
+/**
  * Write a tuple header
  * Same as tp_encode_array, added for compatibility.
  */
@@ -974,7 +980,6 @@ tp_insert(struct tp *p, uint32_t space)
 		mp_sizeof_uint(TP_INSERT) +
 		mp_sizeof_uint(TP_SYNC) +
 		5 +
-		mp_sizeof_map(5) +
 		mp_sizeof_map(2) +
 		mp_sizeof_uint(TP_SPACE) +
 		mp_sizeof_uint(space) +
@@ -1484,6 +1489,28 @@ tp_encode_double(struct tp *p, double num)
 	mp_encode_double(p->p, num);
 	return tp_add(p, sz);
 }
+
+/**
+ *
+ */
+static inline char*
+tp_format(struct tp *p, const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	size_t unused = tp_unused(p);
+	size_t sz = mp_vformat(p->p, unused, format, args);
+	if (sz > unused) {
+		if (tpunlikely(tp_ensure(p, sz) == -1)) {
+			va_end(args);
+			return NULL;
+		}
+		mp_vformat(p->p, unused, format, args);
+	}
+	va_end(args);
+	return tp_add(p, sz);
+}
+
 
 /**
  * Write a tuple header
