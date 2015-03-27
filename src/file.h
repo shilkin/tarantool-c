@@ -65,13 +65,13 @@ struct tbfileheader {
 	double   tm;
 	uint32_t len;
 	uint32_t crc32d;
-} tppacked;
+};
 
 struct tbfilerow {
 	uint16_t tag;
 	uint64_t cookie;
 	uint16_t op;
-} tppacked;
+};
 
 struct tbfile {
 	FILE *f;
